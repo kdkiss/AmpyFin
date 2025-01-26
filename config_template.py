@@ -1,0 +1,8 @@
+POLYGON_API_KEY = "your_polygon_api_key"
+FINANCIAL_PREP_API_KEY = "your_fmp_api_key"
+MONGO_DB_USER = "your_mongo_user"
+MONGO_DB_PASS = "your_mongo_password"
+API_KEY = "your_alpaca_api_key"
+API_SECRET = "your_alpaca_secret_key"
+BASE_URL = "https://paper-api.alpaca.markets"
+mongo_url = "your mongo connection string"
