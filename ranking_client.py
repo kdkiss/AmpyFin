@@ -101,7 +101,7 @@ def process_ticker(ticker, mongo_client, ccxt_client=None):
                         logging.warning(f"Indicator period for {strategy.__name__} not found. Skipping strategy.")
                         break
                     if ccxt_client:
-                        historical_data = get_crypto_data(ticker, ccxt_client, period['ideal_period'])
+                        historical_data = get_crypto_data(ticker, ccxt_client, period['ideal_period']) # Need to adapt correct helper function
                     else:
                         historical_data = get_stock_data(ticker, mongo_client, period['ideal_period'])
                 except Exception as fetch_error:
