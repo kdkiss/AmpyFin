@@ -3,3 +3,5 @@ config.py
 .env
 .vscode/
 **/__pycache__/
+system.txt
+rank_system.txt
