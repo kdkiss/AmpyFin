@@ -1567,4 +1567,3 @@ def VAR_indicator(ticker, data):
       return 'Sell'  
    else:  
       return 'Hold'
-

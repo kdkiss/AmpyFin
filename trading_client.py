@@ -1,5 +1,6 @@
 from polygon import RESTClient
-from config import POLYGON_API_KEY, FINANCIAL_PREP_API_KEY, MONGO_DB_USER, MONGO_DB_PASS, API_KEY, API_SECRET, BASE_URL, mongo_url
+import ccxt
+from config import POLYGON_API_KEY, FINANCIAL_PREP_API_KEY, MONGO_DB_USER, MONGO_DB_PASS, API_KEY, API_SECRET, BASE_URL, mongo_url, EXCHANGE, CCXT_API_KEY, CCXT_API_SECRET, SYMBOLS
 import json
 import certifi
 from urllib.request import urlopen
@@ -7,7 +8,8 @@ from zoneinfo import ZoneInfo
 from pymongo import MongoClient
 import time
 from datetime import datetime, timedelta
-from helper_files.client_helper import place_order, get_ndaq_tickers, market_status, strategies, get_latest_price, dynamic_period_selector
+from helper_files.client_helper import place_order, get_ndaq_tickers, market_status, strategies, get_latest_price, dynamic_period_selector, place_crypto_order
+from helper_files.crypto_utils import connect_to_ccxt, get_latest_crypto_price, get_crypto_tickers
 from alpaca.trading.client import TradingClient
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.data.historical.stock import StockHistoricalDataClient
@@ -80,6 +82,7 @@ def main():
     Main function to control the workflow based on the market's status.
     """
     ndaq_tickers = []
+    crypto_tickers = SYMBOLS  # Example cryptocurrency tickers
     early_hour_first_iteration = True
     post_hour_first_iteration = True
     client = RESTClient(api_key=POLYGON_API_KEY)
@@ -90,6 +93,9 @@ def main():
     asset_collection = db.assets_quantities
     limits_collection = db.assets_limit
     strategy_to_coefficient = {}
+    
+    # Initialize ccxt client
+    ccxt_client = connect_to_ccxt(EXCHANGE, CCXT_API_KEY, CCXT_API_SECRET)
 
     while True:
         client = RESTClient(api_key=POLYGON_API_KEY)
@@ -126,6 +132,7 @@ def main():
             buy_heap = []
             suggestion_heap = []
 
+            # Process stock tickers
             for ticker in ndaq_tickers:
                 decisions_and_quantities = []
                 try:
@@ -180,35 +187,78 @@ def main():
                         
                     decision, quantity, buy_weight, sell_weight, hold_weight = weighted_majority_decision_and_median_quantity(decisions_and_quantities)
                     
-                    
                     print(f"Ticker: {ticker}, Decision: {decision}, Quantity: {quantity}, Weights: Buy: {buy_weight}, Sell: {sell_weight}, Hold: {hold_weight}")
-                    
                     print(f"Cash: {account.cash}")
 
                     if decision == "buy" and float(account.cash) > 15000 and (((quantity + portfolio_qty) * current_price) / portfolio_value) < 0.1:
                         heapq.heappush(buy_heap, (-(buy_weight-(sell_weight + (hold_weight * 0.5))), quantity, ticker))
-                    elif (decision == "sell") and portfolio_qty > 0:
+                    elif decision == "sell" and portfolio_qty > 0:
                         print(f"Executing SELL order for {ticker}")
                         print(f"Executing quantity of {quantity} for {ticker}")
                         quantity = max(quantity, 1)
                         order = place_order(trading_client, symbol=ticker, side=OrderSide.SELL, quantity=quantity, mongo_client=mongo_client)
                         logging.info(f"Executed SELL order for {ticker}: {order}")
-                    elif portfolio_qty == 0.0 and buy_weight > sell_weight and (((quantity + portfolio_qty) * current_price) / portfolio_value) < 0.1 and float(account.cash) > 15000:
-                        max_investment = portfolio_value * 0.10
-                        buy_quantity = min(int(max_investment // current_price), int(buying_power // current_price))
-                        if buy_weight > 2050000:
-                            buy_quantity = max(buy_quantity, 2)
-                            buy_quantity = buy_quantity // 2
-                            print(f"Suggestions for buying for {ticker} with a weight of {buy_weight} and quantity of {buy_quantity}")
-
-                            heapq.heappush(suggestion_heap, (-(buy_weight - sell_weight), buy_quantity, ticker))
-                        else:
-                            logging.info(f"Holding for {ticker}, no action taken.")
                     else:
                         logging.info(f"Holding for {ticker}, no action taken.")
                     
                 except Exception as e:
                     logging.error(f"Error processing {ticker}: {e}")
+
+            # Process cryptocurrency tickers
+            for ticker in crypto_tickers:
+                decisions_and_quantities = []
+                try:
+                    # Fetch current price using ccxt
+                    current_price = get_latest_crypto_price(ccxt_client, ticker)
+                    print(f"Current price of {ticker}: {current_price}")
+
+                    asset_info = asset_collection.find_one({'symbol': ticker})
+                    portfolio_qty = asset_info['quantity'] if asset_info else 0.0
+                    print(f"Portfolio quantity for {ticker}: {portfolio_qty}")
+
+                    limit_info = limits_collection.find_one({'symbol': ticker})
+                    if limit_info:
+                        stop_loss_price = limit_info['stop_loss_price']
+                        take_profit_price = limit_info['take_profit_price']
+                        if current_price <= stop_loss_price or current_price >= take_profit_price:
+                            print(f"Executing SELL order for {ticker} due to stop-loss or take-profit condition")
+                            quantity = portfolio_qty
+                            order = ccxt_client.create_order(ticker, 'market', 'sell', quantity)
+                            logging.info(f"Executed SELL order for {ticker}: {order}")
+                            continue
+
+                    for strategy in strategies:
+                        historical_data = None
+                        while historical_data is None:
+                            try:
+                                period = indicator_collection.find_one({'indicator': strategy.__name__})
+                                historical_data = get_data(ticker, mongo_client, period['ideal_period'], is_crypto=True)
+                            except:
+                                print(f"Error fetching data for {ticker}. Retrying...")
+
+                        decision, quantity = simulate_strategy(strategy, ticker, current_price, historical_data, buying_power, portfolio_qty, portfolio_value)
+                        weight = strategy_to_coefficient[strategy.__name__]
+                        decisions_and_quantities.append((decision, quantity, weight))
+                        
+                    decision, quantity, buy_weight, sell_weight, hold_weight = weighted_majority_decision_and_median_quantity(decisions_and_quantities)
+                    
+                    print(f"Ticker: {ticker}, Decision: {decision}, Quantity: {quantity}, Weights: Buy: {buy_weight}, Sell: {sell_weight}, Hold: {hold_weight}")
+                    print(f"Cash: {account.cash}")
+
+                    if decision == "buy" and float(account.cash) > 15000 and (((quantity + portfolio_qty) * current_price) / portfolio_value) < 0.1:
+                        heapq.heappush(buy_heap, (-(buy_weight-(sell_weight + (hold_weight * 0.5))), quantity, ticker))
+                    elif decision == "sell" and portfolio_qty > 0:
+                        print(f"Executing SELL order for {ticker}")
+                        print(f"Executing quantity of {quantity} for {ticker}")
+                        quantity = max(quantity, 1)
+                        order = ccxt_client.create_order(ticker, 'market', 'sell', quantity)
+                        logging.info(f"Executed SELL order for {ticker}: {order}")
+                    else:
+                        logging.info(f"Holding for {ticker}, no action taken.")
+                    
+                except Exception as e:
+                    logging.error(f"Error processing {ticker}: {e}")
+
             trading_client = TradingClient(API_KEY, API_SECRET)
             account = trading_client.get_account()
             while (buy_heap or suggestion_heap) and float(account.cash) > 15000:
@@ -234,7 +284,7 @@ def main():
                         
                     time.sleep(5)
                     """
-                    This is here so order will propage through and we will have an accurate cash balance recorded
+                    This is here so order will propagate through and we will have an accurate cash balance recorded
                     """
                 except:
                     print("Error occurred while executing buy order. Continuing...")
