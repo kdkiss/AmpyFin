@@ -2,6 +2,8 @@ import requests
 import talib as ta 
 import numpy as np
 import pandas as pd
+import time
+from datetime import datetime, timedelta
 from config import API_KEY, API_SECRET
 
 
@@ -15,13 +17,22 @@ def get_data(ticker, mongo_client, period='1y', api_key=API_KEY, api_secret=API_
             data = collection.find_one({"ticker": ticker, "period": period})
             if data:
                 df = pd.DataFrame(data['data'])
-                df['Date'] = pd.to_datetime(df['Date'])
+                if 'Date' not in df.columns:
+                    df['Date'] = pd.to_datetime(df['t'], errors='coerce')
                 df.set_index('Date', inplace=True)
+                # Rename the columns
+                df.rename(columns={
+                    'o': 'Open',
+                    'h': 'High',
+                    'l': 'Low',
+                    'c': 'Close',
+                    'v': 'Volume'
+                }, inplace=True)
                 return df
             else:
-                end_time = datetime.now()
-                start_time = end_time - timedelta(days=365)
-                url = f"https://data.alpaca.markets/v1beta3/crypto/us/bars?symbols={ticker}&timeframe=1D&start={start_time.isoformat()}&end={end_time.isoformat()}"
+                end_time = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
+                start_time = (datetime.utcnow() - timedelta(days=365)).replace(microsecond=0).isoformat() + 'Z'
+                url = f"https://data.alpaca.markets/v1beta3/crypto/us/bars?symbols={ticker}&timeframe=1D&start={start_time}&end={end_time}"
                 response = requests.get(url, headers={
                     "APCA-API-KEY-ID": api_key,
                     "APCA-API-SECRET-KEY": api_secret
@@ -32,8 +43,18 @@ def get_data(ticker, mongo_client, period='1y', api_key=API_KEY, api_secret=API_
                     collection.insert_one({"ticker": ticker, "period": period, 'data': records})
                     print("Data fetched from Alpaca")
                     df = pd.DataFrame(records)
-                    df['Date'] = pd.to_datetime(df['t'])
+                    if 't' in df.columns:
+                        df['Date'] = pd.to_datetime(df['t'], errors='coerce')
                     df.set_index('Date', inplace=True)
+                    df.drop(columns=['t'], inplace=True)  # Remove the original 't' column after conversion
+                    # Rename the columns
+                    df.rename(columns={
+                        'o': 'Open',
+                        'h': 'High',
+                        'l': 'Low',
+                        'c': 'Close',
+                        'v': 'Volume'
+                    }, inplace=True)
                     return df
                 else:
                     raise Exception(f"Error fetching data for {ticker}: {response.status_code} - {response.text}")
@@ -55,16 +76,57 @@ def simulate_strategy(strategy, ticker, current_price, historical_data, account_
 
 # Overlap Studies  
   
-def BBANDS_indicator(ticker, data):  
-   """Bollinger Bands (BBANDS) indicator."""  
-      
-   upper, middle, lower = ta.BBANDS(data['Close'], timeperiod=20)  
-   if data['Close'].iloc[-1] > upper.iloc[-1]:  
-      return 'Sell'  
-   elif data['Close'].iloc[-1] < lower.iloc[-1]:  
-      return 'Buy'  
-   else:  
-      return 'Hold'  
+# def BBANDS_indicator(ticker, data):  
+#    """Bollinger Bands (BBANDS) indicator."""  
+#      
+#   upper, middle, lower = ta.BBANDS(data['Close'], timeperiod=20)  
+#   if data['Close'].iloc[-1] > upper.iloc[-1]:  
+#      return 'Sell'  
+#   elif data['Close'].iloc[-1] < lower.iloc[-1]:  
+#      return 'Buy'  
+#   else:  
+#      return 'Hold'  
+
+def BBANDS_indicator(ticker, data):
+    """
+    Calculate Bollinger Bands (BBANDS) indicator and determine buy, sell, or hold signal.
+    
+    Parameters:
+    ticker (str): Ticker symbol of the asset.
+    data (pd.DataFrame): DataFrame containing 'Close' prices.
+    
+    Returns:
+    str: 'Buy', 'Sell', or 'Hold' based on the BBANDS indicator.
+    """
+    try:
+        # Check if the DataFrame is valid and contains enough data points
+        if data is None or data.empty:
+            raise ValueError(f"Data for {ticker} is empty or None.")
+        if 'Close' not in data.columns:
+            raise ValueError(f"'Close' column missing in data for {ticker}.")
+        if len(data) < 20:
+            raise ValueError(f"Not enough data points (minimum 20) for {ticker}.")
+        
+        # Calculate Bollinger Bands
+        upper, middle, lower = ta.BBANDS(data['Close'], timeperiod=20)
+        
+        # Check for NaN values in the Bollinger Bands output
+        if upper.isna().all() or lower.isna().all():
+            raise ValueError(f"Bollinger Bands calculation failed for {ticker}.")
+        
+        # Determine action based on BBANDS
+        latest_close = data['Close'].iloc[-1]
+        if latest_close > upper.iloc[-1]:
+            return 'Sell'
+        elif latest_close < lower.iloc[-1]:
+            return 'Buy'
+        else:
+            return 'Hold'
+    
+    except Exception as e:
+        print(f"Error in BBANDS_indicator for {ticker}: {e}")
+        return 'Error'
+
   
 def DEMA_indicator(ticker, data):  
    """Double Exponential Moving Average (DEMA) indicator."""  

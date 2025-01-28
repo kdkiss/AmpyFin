@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from zoneinfo import ZoneInfo
 from pymongo import MongoClient
 import time
+import re
 from datetime import datetime, timedelta
 import requests
 import logging
@@ -49,7 +50,7 @@ import math
 import yfinance as yf
 import logging
 from collections import Counter
-from trading_client import market_status
+
 import heapq 
 import certifi
 ca = certifi.where()
@@ -63,12 +64,13 @@ logging.basicConfig(
     ]
 )
 
+
 def process_ticker(ticker, mongo_client):
     try:
         current_price = None
         while current_price is None:
             try:
-                current_price = get_latest_price(ticker)
+                current_price = get_latest_price(ticker, API_KEY, API_SECRET)
             except Exception as fetch_error:
                 logging.warning(f"Error fetching price for {ticker}. Retrying... {fetch_error}")
                 time.sleep(10)
@@ -80,7 +82,7 @@ def process_ticker(ticker, mongo_client):
             while historical_data is None:
                 try:
                     period = indicator_collection.find_one({'indicator': strategy.__name__})
-                    historical_data = get_data(ticker, mongo_client, period['ideal_period'])
+                    historical_data = get_data(ticker, mongo_client, period['ideal_period'], API_KEY, API_SECRET)
                 except Exception as fetch_error:
                     logging.warning(f"Error fetching historical data for {ticker}. Retrying... {fetch_error}")
                     time.sleep(60)
@@ -96,6 +98,7 @@ def process_ticker(ticker, mongo_client):
             total_portfolio_value = strategy_doc["portfolio_value"]
             portfolio_qty = strategy_doc["holdings"].get(ticker, {}).get("quantity", 0)
 
+            # Updated function call with mongo_client parameter
             simulate_trade(ticker, strategy, historical_data, current_price,
                            account_cash, portfolio_qty, total_portfolio_value, mongo_client)
             
@@ -104,9 +107,6 @@ def process_ticker(ticker, mongo_client):
         logging.error(f"Error in thread for {ticker}: {e}")
 
 def simulate_trade(ticker, strategy, historical_data, current_price, account_cash, portfolio_qty, total_portfolio_value, mongo_client):
-    """
-    Simulates a trade based on the given strategy and updates MongoDB.
-    """
     print(f"Simulating trade for {ticker} with strategy {strategy.__name__} and quantity of {portfolio_qty}")
     action, quantity = simulate_strategy(strategy, ticker, current_price, historical_data, account_cash, portfolio_qty, total_portfolio_value)
     
@@ -213,22 +213,22 @@ def simulate_trade(ticker, strategy, historical_data, current_price, account_cas
         logging.info(f"Action: {action} | Ticker: {ticker} | Quantity: {quantity} | Price: {current_price}")
     print(f"Action: {action} | Ticker: {ticker} | Quantity: {quantity} | Price: {current_price}")
 
-
 def update_portfolio_values(client):
-    """
-    Update portfolio values by summing cash and the value of holdings.
-    """
     db = client.trading_simulator  
     holdings_collection = db.algorithm_holdings
     for strategy_doc in holdings_collection.find({}):
         portfolio_value = strategy_doc["amount_cash"]
         for ticker, holding in strategy_doc["holdings"].items():
+            if not re.match(r'^[A-Z]+/[A-Z]+$', ticker):
+                logging.warning(f"Skipping invalid ticker format: {ticker}")
+                continue
+
             current_price = None
             while current_price is None:
                 try:
-                    current_price = get_latest_price(ticker)
-                except:
-                    print(f"Error fetching price for {ticker}. Retrying...")
+                    current_price = get_latest_price(ticker, API_KEY, API_SECRET)
+                except Exception as e:
+                    print(f"Error fetching price for {ticker}. Retrying... {e}")
                     time.sleep(120)
             print(f"Current price of {ticker}: {current_price}")
             holding_value = holding["quantity"] * current_price
@@ -236,9 +236,6 @@ def update_portfolio_values(client):
         holdings_collection.update_one({"strategy": strategy_doc["strategy"]}, {"$set": {"portfolio_value": portfolio_value}}, upsert=True)
 
 def update_ranks(client):
-    """
-    Rank strategies based on their performance.
-    """
     db = client.trading_simulator
     points_collection = db.points_tally
     rank_collection = db.rank
@@ -262,57 +259,30 @@ def update_ranks(client):
     db.HistoricalDatabase.delete_many({})
     print("Successfully updated ranks")
     print("Successfully deleted historical database")
-   
+
 def main():
-    """
-    Main function to control the workflow based on the market's status.
-    """
-    crypto_tickers = []
-    early_hour_first_iteration = True
-    post_market_hour_first_iteration = True
+    # Initialize MongoDB client
+    mongo_client = MongoClient(mongo_url, tlsCAFile=ca)
+    
+    # Retrieve crypto tickers
+    crypto_tickers = get_alpaca_crypto_tickers(API_KEY, API_SECRET, mongo_client)
+    logging.info("Processing strategies for crypto tickers.")
 
-    while True: 
-        mongo_client = MongoClient(mongo_url, tlsCAFile=ca)
-        status = mongo_client.market_data.market_status.find_one({})["market_status"]
-        
-        if status == "open":  
-            if not crypto_tickers:
-                logging.info("Market is open. Processing strategies.")  
-                crypto_tickers = get_alpaca_crypto_tickers(API_KEY, API_SECRET, mongo_client)
+    while True:
+        threads = []
+        for ticker in crypto_tickers:
+            thread = threading.Thread(target=process_ticker, args=(ticker, mongo_client))
+            threads.append(thread)
+            thread.start()
 
-            threads = []
-            for ticker in crypto_tickers:
-                thread = threading.Thread(target=process_ticker, args=(ticker, mongo_client))
-                threads.append(thread)
-                thread.start()
+        for thread in threads:
+            thread.join()
 
-            for thread in threads:
-                thread.join()
+        logging.info("Finished processing all strategies. Waiting for 120 seconds.")
+        time.sleep(120)
 
-            logging.info("Finished processing all strategies. Waiting for 120 seconds.")
-            time.sleep(120)  
-        
-        elif status == "early_hours":
-            if early_hour_first_iteration:
-                crypto_tickers = get_alpaca_crypto_tickers(API_KEY, API_SECRET, mongo_client)  
-                early_hour_first_iteration = False  
-                post_market_hour_first_iteration = True
-                logging.info("Market is in early hours. Waiting for 60 seconds.")
-            time.sleep(60)  
-
-        elif status == "closed":
-            if post_market_hour_first_iteration:
-                early_hour_first_iteration = True
-                logging.info("Market is closed. Performing post-market analysis.") 
-                post_market_hour_first_iteration = False
-                mongo_client.trading_simulator.time_delta.update_one({}, {"$inc": {"time_delta": 0.01}})
-                update_portfolio_values(mongo_client)
-                update_ranks(mongo_client)
-            time.sleep(60)  
-        else:  
-            logging.error("An error occurred while checking market status.")  
-            time.sleep(60)
-        mongo_client.close()
+        update_portfolio_values(mongo_client)
+        update_ranks(mongo_client)
 
 if __name__ == "__main__":
     main()
