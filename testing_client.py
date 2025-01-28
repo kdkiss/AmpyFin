@@ -36,7 +36,7 @@ def test_strategies(api_key, api_secret):
     mongo_client.close()
 
 if __name__ == "__main__":
-    print(get_latest_price('BTC/USD', API_KEY, API_SECRET))
+    print(get_latest_price('BTC/USD'))
     """
     test_strategies(API_KEY, API_SECRET)
     """

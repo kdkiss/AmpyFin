@@ -8,6 +8,7 @@ import requests
 import numpy as np
 import sys
 from pathlib import Path
+from config import API_KEY, API_SECRET
 
 parent_dir = Path(__file__).resolve().parent.parent
 sys.path.append(str(parent_dir))
@@ -101,8 +102,8 @@ def get_alpaca_crypto_tickers(api_key, api_secret, mongo_client):
     """
     url = "https://api.alpaca.markets/v2/assets?asset_class=crypto"
     headers = {
-        "APCA-API-KEY-ID": api_key,
-        "APCA-API-SECRET-KEY": api_secret
+        "APCA-API-KEY-ID": API_KEY,
+        "APCA-API-SECRET-KEY": API_SECRET
     }
     response = requests.get(url, headers=headers)
     if response.status_code == 200:
@@ -150,8 +151,8 @@ def get_latest_price(ticker):
    try:  
       url = f"https://data.alpaca.markets/v1beta3/crypto/us/latest/quotes?symbols={ticker}"
       response = requests.get(url, headers={
-          "APCA-API-KEY-ID": api_key,
-          "APCA-API-SECRET-KEY": api_secret
+          "APCA-API-KEY-ID": API_KEY,
+          "APCA-API-SECRET-KEY": API_SECRET
       })
       if response.status_code == 200:
           data = response.json()
@@ -182,8 +183,8 @@ def dynamic_period_selector(api_key, api_secret, ticker):
             start_time = end_time - timedelta(days=365)
             url = f"https://data.alpaca.markets/v1beta3/crypto/us/bars?symbols={ticker}&timeframe={period}&start={start_time.isoformat()}&end={end_time.isoformat()}"
             response = requests.get(url, headers={
-                "APCA-API-KEY-ID": api_key,
-                "APCA-API-SECRET-KEY": api_secret
+                "APCA-API-KEY-ID": API_KEY,
+                "APCA-API-SECRET-KEY": API_SECRET
             })
             if response.status_code == 200:
                 data = response.json()

@@ -2,9 +2,10 @@ import requests
 import talib as ta 
 import numpy as np
 import pandas as pd
+from config import API_KEY, API_SECRET
 
 
-def get_data(ticker, mongo_client, period='1y', api_key, api_secret): 
+def get_data(ticker, mongo_client, period='1y', api_key=API_KEY, api_secret=API_SECRET): 
     """Retrieve historical data for a given ticker."""
     data = None
     while data is None:
