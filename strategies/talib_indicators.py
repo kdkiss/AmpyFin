@@ -1,54 +1,56 @@
-import yfinance as yf  
+import requests
 import talib as ta 
 import numpy as np
 import pandas as pd
-def get_data(ticker, mongo_client, period='1y'): 
 
-   """Retrieve historical data for a given ticker."""  
 
-   data = None
-   while data is None:
-      
-      try:
-         db = mongo_client.HistoricalDatabase
-         collection = db.HistoricalDatabase
-         
-         data = collection.find_one({"ticker": ticker, "period": period})
-         
-         if data:
-            df = pd.DataFrame(data['data'])
-            
-            
-            df['Date'] = pd.to_datetime(df['Date'])
-            df.set_index('Date', inplace=True)
-            
-            return df
-         else:
-
-            ticker_obj = yf.Ticker(ticker)
-            data = ticker_obj.history(period=period)
-            
-            records = data.reset_index().to_dict('records')
-            
-            collection.insert_one({"ticker": ticker, "period": period, 'data': records})
-            
-            print("Data fetched from Yahoo Finance")
-            return data
-      except Exception as e:
-         print(f"Error fetching data for {ticker}: {e}")
-   
-   return data  
+def get_data(ticker, mongo_client, period='1y', api_key, api_secret): 
+    """Retrieve historical data for a given ticker."""
+    data = None
+    while data is None:
+        try:
+            db = mongo_client.HistoricalDatabase
+            collection = db.HistoricalDatabase
+            data = collection.find_one({"ticker": ticker, "period": period})
+            if data:
+                df = pd.DataFrame(data['data'])
+                df['Date'] = pd.to_datetime(df['Date'])
+                df.set_index('Date', inplace=True)
+                return df
+            else:
+                end_time = datetime.now()
+                start_time = end_time - timedelta(days=365)
+                url = f"https://data.alpaca.markets/v1beta3/crypto/us/bars?symbols={ticker}&timeframe=1D&start={start_time.isoformat()}&end={end_time.isoformat()}"
+                response = requests.get(url, headers={
+                    "APCA-API-KEY-ID": api_key,
+                    "APCA-API-SECRET-KEY": api_secret
+                })
+                if response.status_code == 200:
+                    data = response.json()
+                    records = data['bars'][ticker]
+                    collection.insert_one({"ticker": ticker, "period": period, 'data': records})
+                    print("Data fetched from Alpaca")
+                    df = pd.DataFrame(records)
+                    df['Date'] = pd.to_datetime(df['t'])
+                    df.set_index('Date', inplace=True)
+                    return df
+                else:
+                    raise Exception(f"Error fetching data for {ticker}: {response.status_code} - {response.text}")
+        except Exception as e:
+            print(f"Error fetching data for {ticker}: {e}")
+            time.sleep(60)
+    return data
   
 def simulate_strategy(strategy, ticker, current_price, historical_data, account_cash, portfolio_qty, total_portfolio_value):
-   max_investment = total_portfolio_value * 0.10
-   action = strategy(ticker, historical_data)
-   
-   if action == 'Buy':
-      return 'buy', min(int(max_investment // current_price), int(account_cash // current_price))
-   elif action == 'Sell' and portfolio_qty > 0:
-      return 'sell', min(portfolio_qty, max(1, int(portfolio_qty * 0.5)))
-   else:
-      return 'hold', 0
+    max_investment = total_portfolio_value * 0.10
+    action = strategy(ticker, historical_data)
+    
+    if action == 'Buy':
+        return 'buy', min(int(max_investment // current_price), int(account_cash // current_price))
+    elif action == 'Sell' and portfolio_qty > 0:
+        return 'sell', min(portfolio_qty, max(1, int(portfolio_qty * 0.5)))
+    else:
+        return 'hold', 0
 
 # Overlap Studies  
   
